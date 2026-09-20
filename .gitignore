@@ -6,4 +6,13 @@ __pycache__
 .claude
 .gemini
 .vscode
+.env
+data/
+models/
 
+
+# generated dataset trees and training runs
+dataset/
+runs/
+outputs/
+drive_import/
