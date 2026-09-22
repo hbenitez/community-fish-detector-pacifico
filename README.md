@@ -219,6 +219,60 @@ those being the small, distant or blurred fish the annotator could not identify
 — and is an argument for keeping them as positives rather than discarding them.
 
 
+### Five-class species variant
+
+`build_splits.py --task species` gives its own class to every species with at
+least `--min-boxes` annotations, pools the rest as `other_fish`, and keeps
+`not_defined` as an explicit `unidentified` class rather than deleting it —
+dropped boxes become background, which teaches the model that fish are
+background.
+
+```bash
+python3 scripts/build_splits.py \
+  --via-json annotations/reef1_via_clean.json \
+  --images-root data/images_jpeg_reef_01 data/images_jpeg_reef_02 \
+  --dataset-dir dataset/pacifico-species \
+  --splits-dir configs/splits-species \
+  --yaml-out configs/pacifico-species-5class.yaml \
+  --task species --min-boxes 60 \
+  --pattern train val train train test train train val train train test train
+
+python3 scripts/train_yolo.py --data configs/pacifico-species-5class.yaml \
+  --device mps --name pacifico_species_5class
+```
+
+Test results, and training box counts for contrast:
+
+| Class | train boxes | test boxes | mAP50 | mAP50-95 |
+|---|---:|---:|---:|---:|
+| **all** | 981 | 368 | **0.588** | 0.296 |
+| *Stegastes acapulcoensis* | 42 | 10 | **0.852** | 0.466 |
+| *Thalassoma lucasanum* | 192 | 86 | 0.679 | 0.330 |
+| `other_fish` | 39 | 15 | 0.621 | 0.328 |
+| `unidentified` | 651 | 209 | 0.432 | 0.170 |
+| *Azurina atrilobata* | 57 | 48 | 0.355 | 0.186 |
+
+**The ranking is almost inverted against training data volume.** *Stegastes*
+has 42 training boxes and the best score; `unidentified` has fifteen times as
+many and is second worst. What predicts performance here is the number of
+*independent* observations — *Azurina*'s 57 boxes come from 8 contiguous
+episodes of a schooling fish, while *Stegastes*' 42 are spread over 19 — and
+intrinsic difficulty: `unidentified` is by definition the fish the annotator
+could not make out.
+
+Species labels cost detection performance. Collapsing every prediction to
+`fish` and scoring against the same ground truth:
+
+| Model | mAP50 | mAP50-95 | P@0.25 | R@0.25 | F1 |
+|---|---:|---:|---:|---:|---:|
+| CFD baseline (RF-DETR nano) | 0.172 | 0.054 | 0.193 | 0.287 | 0.231 |
+| Fine-tuned, 1 class | **0.733** | **0.323** | 0.655 | 0.715 | 0.684 |
+| Fine-tuned, 5 classes, collapsed | 0.663 | 0.298 | 0.679 | 0.659 | 0.669 |
+
+About 10% of detection performance buys the species labels. Note that
+*Stegastes* rests on 10 test boxes and `other_fish` on 15, so those figures
+have wide intervals and should not be quoted as point estimates.
+
 ## Contributors
 
 This model was created by a collective effort of the following folks: <a href="https://www.linkedin.com/in/filippo-varini/">Filippo Varini</a>, <a href="https://dmorris.net">Dan Morris</a>, <a href="https://www.linkedin.com/in/sonny-burniston/">Sonny Burniston</a>, <a href="https://www.oceaneboulais.net/">Oceane Boulais</a>, <a href="https://www.mbari.org/person/kevin-barnard/">Kevin Barnard</a>, <a href="https://www.mbari.org/person/laura-chrobak/">Laura Chrobak</a>, <a href="https://alexvmt.github.io/">Alexander Merdian-Tarko</a>, <a href="https://www.linkedin.com/in/kameswari-devi-ayyagari-031820b7/">Devi Ayyagari</a>, <a href="https://www.linkedin.com/in/mona-dhiflaoui/">Mona Dhiflaoui</a>, <a href="https://www.linkedin.com/in/jiashu-chen-w/">Joshua Chen</a>, and many others.

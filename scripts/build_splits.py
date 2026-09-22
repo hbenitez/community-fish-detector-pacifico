@@ -11,6 +11,12 @@ side of every boundary where the assignment changes.
 By default all boxes collapse to a single "fish" class: the annotations are
 60% `not_defined`, which is unusable for species classification but perfectly
 valid as a fish/no-fish positive.
+
+`--task species` instead gives its own class to every species with at least
+`--min-boxes` annotations, groups the remaining identified species as
+`other_fish`, and keeps `not_defined` as an explicit `unidentified` class.
+Dropping the unidentified boxes is not an option: they would become background,
+teaching the model that fish are background.
 """
 
 from __future__ import annotations
@@ -29,6 +35,39 @@ FRAME_RE = re.compile(r"^(?P<video>.+)_(?P<index>\d+)\.jpg$", re.IGNORECASE)
 
 # One entry per contiguous block, applied to every video in order.
 DEFAULT_PATTERN = ("train", "val", "train", "train", "test", "train")
+
+UNIDENTIFIED_SOURCE = "not_defined"
+UNIDENTIFIED_CLASS = "unidentified"
+OTHER_CLASS = "other_fish"
+
+
+def build_class_map(annotations, task: str, min_boxes: int):
+    """Return (name -> class id function, ordered class names)."""
+    if task == "fish":
+        return (lambda name: 0), ["fish"]
+
+    counts = Counter(
+        r.get("region_attributes", {}).get("name", "").strip()
+        for regions in annotations.values() for r in regions
+    )
+    named = sorted(
+        (n for n, c in counts.items()
+         if n and n != UNIDENTIFIED_SOURCE and c >= min_boxes),
+        key=lambda n: -counts[n],
+    )
+    names = named + [OTHER_CLASS, UNIDENTIFIED_CLASS]
+    index = {n: i for i, n in enumerate(names)}
+
+    def class_map(name: str):
+        name = name.strip()
+        if name == UNIDENTIFIED_SOURCE:
+            return index[UNIDENTIFIED_CLASS]
+        if name in index:
+            return index[name]
+        # Identified, but too rare to carry its own class.
+        return index[OTHER_CLASS]
+
+    return class_map, names
 
 
 def parse_via(via_path: Path) -> dict[str, list[dict]]:
@@ -155,14 +194,21 @@ def main() -> int:
                     help="Split assignment per contiguous block.")
     ap.add_argument("--copy", action="store_true",
                     help="Copy images instead of symlinking them.")
+    ap.add_argument("--task", choices=["fish", "species"], default="fish",
+                    help="Single 'fish' class, or per-species classes.")
+    ap.add_argument("--min-boxes", type=int, default=60,
+                    help="Boxes a species needs to get its own class "
+                         "(--task species). Below this it joins other_fish.")
     args = ap.parse_args()
 
     pattern = tuple(args.pattern)
     annotations = parse_via(args.via_json)
     groups = group_by_video(annotations)
 
-    # Single class: an unidentified fish is still a fish.
-    class_map = lambda name: 0  # noqa: E731
+    class_map, class_names = build_class_map(
+        annotations, args.task, args.min_boxes)
+    print(f"Task: {args.task}  ({len(class_names)} classes: "
+          f"{', '.join(class_names)})")
 
     splits: dict[str, list[str]] = defaultdict(list)
     all_dropped: list[str] = []
@@ -207,10 +253,12 @@ def main() -> int:
             lines = to_yolo(annotations[fn], w, h, class_map)
 
             label = args.dataset_dir / "labels" / split / (Path(fn).stem + ".txt")
-            label.write_text("\n".join(lines), encoding="utf-8")
+            label.write_text("".join(f"{l}\n" for l in lines), encoding="utf-8")
 
             stats[split]["images"] += 1
             stats[split]["boxes"] += len(lines)
+            for ln in lines:
+                stats[split][f"class{ln.split()[0]}"] += 1
             if not lines:
                 stats[split]["background"] += 1
             manifest.append(fn)
@@ -230,9 +278,9 @@ def main() -> int:
         f"train: images/train\n"
         f"val: images/val\n"
         f"test: images/test\n\n"
-        f"nc: 1\n"
+        f"nc: {len(class_names)}\n"
         f"names:\n"
-        f"  0: 'fish'\n",
+        + "".join(f"  {i}: '{n}'\n" for i, n in enumerate(class_names)),
         encoding="utf-8",
     )
 
@@ -247,6 +295,13 @@ def main() -> int:
     print(f"  {'total':5}  {total_i:4} images  {total_b:5} boxes  "
           f"({len(all_dropped)} dropped to guard bands)")
     print("=" * 62)
+    if len(class_names) > 1:
+        print("\n  class                          train    val   test")
+        for i, n in enumerate(class_names):
+            print(f"  {i} {n:<28} "
+                  + "".join(f"{stats.get(sp, Counter())[f'class{i}']:6}"
+                            for sp in ("train", "val", "test")))
+
     print(f"\nSplit manifests: {args.splits_dir}")
     print(f"Dataset tree:    {args.dataset_dir}")
     print(f"Dataset config:  {args.yaml_out}")

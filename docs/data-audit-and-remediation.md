@@ -3,8 +3,9 @@
 **Date:** 2026-09-20
 **Scope:** the training, validation and evaluation material developed for the
 Utría / Eastern Pacific reef study, imported from Google Drive.
-**Status:** audit complete; leakage-free splits built and verified; retraining
-run; baseline comparison scored on the held-out `test` split.
+**Status:** audit complete; leakage-free splits built and verified; single-class
+and five-class models trained; both scored against the CFD baseline on the
+held-out `test` split.
 
 ---
 
@@ -503,7 +504,124 @@ Raw numbers: `results/test_confusion.json`.
 
 ---
 
-## 8. Remaining work
+## 8. Five-class species variant
+
+Built with `scripts/build_splits.py --task species --min-boxes 60`, on the
+identical images and split manifests as the single-class run (verified
+byte-for-byte), so the two are directly comparable.
+
+### 8.1 Why five classes, and which five
+
+4.1 proposed "the four species with ≥24 boxes"; there are five at that
+threshold, and total box count turned out to be the wrong criterion anyway.
+What decides whether a class is worth a slot is how many boxes reach *val and
+test*, and the temporal split distributes species very unevenly, because
+species appear in bursts that fall inside single blocks:
+
+| Species | train | val | test | Verdict |
+|---|---:|---:|---:|---|
+| `not_defined` | 651 | 126 | 209 | evaluable |
+| *Thalassoma lucasanum* | 192 | 59 | 86 | evaluable |
+| *Azurina atrilobata* | 57 | 5 | 49 | marginal |
+| *Stegastes acapulcoensis* | 42 | 10 | 10 | marginal |
+| *Diodon holocanthus* | 6 | 16 | 3 | no — 6 train boxes |
+| *Cephalopholis panamensis* | 16 | 8 | **0** | no — unevaluable |
+| *Bodianus diplotaenia* | 7 | **0** | 7 | no |
+
+Naming *Cephalopholis* would mean reporting a test number that cannot exist.
+Temporal grouping and per-species balance are in direct conflict with only two
+videos; that is a property of the data, not a fixable defect.
+
+The five slots: *Thalassoma*, *Azurina*, *Stegastes*, `other_fish` (the nine
+remaining identified species), `unidentified` (`not_defined`). Keeping
+`unidentified` as a class rather than deleting it is deliberate — dropped
+boxes become background, which teaches the model that fish are background.
+
+### 8.2 Results on test
+
+| Class | train boxes | test boxes | mAP50 | mAP50-95 | P | R |
+|---|---:|---:|---:|---:|---:|---:|
+| **all** | 981 | 368 | **0.588** | 0.296 | 0.549 | 0.622 |
+| *Stegastes acapulcoensis* | 42 | 10 | **0.852** | 0.466 | 0.619 | 0.900 |
+| *Thalassoma lucasanum* | 192 | 86 | 0.679 | 0.330 | 0.592 | 0.686 |
+| `other_fish` | 39 | 15 | 0.621 | 0.328 | 0.650 | 0.600 |
+| `unidentified` | 651 | 209 | 0.432 | 0.170 | 0.525 | 0.460 |
+| *Azurina atrilobata* | 57 | 48 | 0.355 | 0.186 | 0.359 | 0.467 |
+
+### 8.3 Training data volume is not the binding constraint
+
+The table above is ordered by score, and it is almost inverted against
+training data:
+
+- *Stegastes*, with **42** training boxes, is the **best** class at 0.852.
+- `unidentified`, with **651** — fifteen times as many — is second worst at
+  0.432.
+
+Two things explain it, and neither is volume.
+
+**Independent observations, not boxes.** *Azurina* has 57 training boxes but
+they come from just 16 images in 8 contiguous episodes: it is a schooling
+fish, so one frame contributes many boxes of the same individuals in the same
+light. *Stegastes* has fewer boxes (42) spread over 41 images and 19 episodes.
+Ranking the real species by episode count — *Thalassoma* 27, *Stegastes* 19,
+`other_fish` 14, *Azurina* 8 — tracks the scores far better than box count
+does.
+
+**Intrinsic difficulty.** `unidentified` is the class the annotator could not
+name, which selects for small, distant and blurred fish. It has the most data
+of any class and the second-worst score, and it was also the hardest class for
+both models in 7.4. More `not_defined` data would not fix it; those targets
+are simply hard.
+
+### 8.4 Cost to detection
+
+Scored as pure detection — all predictions collapsed to `fish`, same ground
+truth, same code as 7.1:
+
+| Model | mAP50 | mAP50-95 | P@0.25 | R@0.25 | F1 |
+|---|---:|---:|---:|---:|---:|
+| CFD baseline (RF-DETR nano) | 0.172 | 0.054 | 0.193 | 0.287 | 0.231 |
+| Fine-tuned, 1 class | **0.733** | **0.323** | 0.655 | 0.715 | 0.684 |
+| Fine-tuned, 5 classes, collapsed | 0.663 | 0.298 | 0.679 | 0.659 | 0.669 |
+
+Splitting capacity across five classes costs about 0.07 mAP50 and 0.06 recall
+against the single-class model. So the choice is a real trade, not a free
+addition: species labels cost roughly 10% of detection performance.
+
+### 8.5 What this changes
+
+The audit's position in 4.1 — that species detection is unsupportable — was
+too strong. *Stegastes* at 0.852 and *Thalassoma* at 0.679 are usable, and
+`other_fish` at 0.621 works better than a nine-species grab-bag has any right
+to.
+
+The defensible version is narrower:
+
+> Three of the five classes are usable. Species detection is viable for
+> *Thalassoma*, *Stegastes* and a pooled `other_fish`, at a cost of about 10%
+> detection performance against the single-class model. *Azurina* fails on
+> independent-observation count despite adequate box count, and `unidentified`
+> — the largest class — fails on intrinsic target difficulty.
+
+Caveats that must travel with these numbers: *Stegastes* rests on 10 test
+boxes and *other_fish* on 15, so their intervals are wide and 0.852 should not
+be quoted as a point estimate. Only *Thalassoma* (86) and `unidentified` (209)
+have test support comparable to the single-class run.
+
+### 8.6 A duplicate annotation
+
+Ultralytics reports 368 test boxes where the label files hold 369. The
+difference is a genuine duplicate in the source annotations: in
+`reef_01_00117`, one *Azurina atrilobata* box is recorded twice, identically.
+Ultralytics de-duplicates; the metrics code here does not. It is one box out
+of 1,771 and changes nothing, but it should be removed from
+`annotations/reef1_via_clean.json`, and the double-click that produced it may
+be worth looking for elsewhere in the annotation workflow. It is the only
+duplicate in the dataset.
+
+---
+
+## 9. Remaining work
 
 1. **Fix `evaluar_linea_base.py`** or delete it in favour of
    `procesar_y_evaluar.py` (3.6).
@@ -516,7 +634,7 @@ Raw numbers: `results/test_confusion.json`.
 
 ---
 
-## 9. Note on the earlier results
+## 10. Note on the earlier results
 
 `runs/detect/cfd_pacifico/` should be retained as a record of the first
 iteration, but none of its metrics can be cited. If the earlier figures have
