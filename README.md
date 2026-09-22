@@ -13,9 +13,10 @@ These models represent an initial training effort. They perform reasonably well 
 
 1. [Models](#models)  
 2. [Quick start](#quick-start)  
-3. [Contributors](#contributors)
-4. [Example predictions](#example-predictions)  
-5. [Also see](#also-see)  
+3. [Eastern Pacific fine-tuning study](#eastern-pacific-fine-tuning-study)  
+4. [Contributors](#contributors)
+5. [Example predictions](#example-predictions)  
+6. [Also see](#also-see)  
 
 
 ## Models
@@ -84,6 +85,139 @@ annotated.save("/path/to/your/output.jpg")
 ```
 
 Be sure to specify `resolution=640`; the RF-DETR Nano architecture defaults to 384, but our detector was fine-tuned at 640, and we expect that you will get better results at 640.  This is not necessary for the batch inference script, which automatically detects the training size.
+
+## Eastern Pacific fine-tuning study
+
+This fork adds a study fine-tuning a detector on two reef video transects from
+Utría, Colombian Pacific, and comparing it against the general-purpose CFD
+baseline. Full write-up, including a data audit of the original pipeline:
+[`docs/data-audit-and-remediation.md`](docs/data-audit-and-remediation.md).
+
+The annotations cover 790 frames and 1,771 boxes across 13 species, but 60% of
+boxes are an unidentified `not_defined` catch-all and four species have one or
+two examples, so species detection is not supportable. The study collapses to a
+single `fish` class — an unidentified fish is still a fish — which also puts it
+on the same task as the CFD baseline.
+
+### Scripts
+
+| Script | Purpose |
+|--|--|
+| [`scripts/build_splits.py`](scripts/build_splits.py) | VIA annotations → YOLO dataset with leakage-free train/val/test splits |
+| [`scripts/train_yolo.py`](scripts/train_yolo.py) | Fine-tune a YOLO detector from a dataset config |
+| [`scripts/evaluate.py`](scripts/evaluate.py) | Score any number of models on a split with identical metrics |
+| [`scripts/confusion_matrix.py`](scripts/confusion_matrix.py) | Confusion matrix and per-species recall |
+| [`scripts/detection_metrics.py`](scripts/detection_metrics.py) | Shared metrics (mAP via pycocotools, IoU matching) |
+| [`scripts/detectors.py`](scripts/detectors.py) | Shared model loading and cached inference |
+
+### Avoiding data leakage
+
+Frames are sampled one per three seconds from continuous transects, so
+neighbouring frames are near-duplicates and a random split leaks them across
+the boundary. `build_splits.py` cuts each video into contiguous temporal
+blocks, assigns whole blocks, and drops a guard band either side of every
+boundary where the assignment changes. No frame in one split is within 15
+seconds of real time of a frame in another.
+
+```bash
+python3 scripts/build_splits.py \
+  --via-json annotations/reef1_via_clean.json \
+  --images-root data/images_jpeg_reef_01 data/images_jpeg_reef_02 \
+  --dataset-dir dataset/pacifico-fish \
+  --splits-dir configs/splits \
+  --yaml-out configs/pacifico-fish-1class.yaml \
+  --pattern train val train train test train train val train train test train
+```
+
+| Split | Images | Boxes | Background frames |
+|---|---:|---:|---:|
+| train | 495 | 981 | 148 |
+| val | 116 | 232 | 38 |
+| test | 115 | 369 | 24 |
+
+### Training
+
+```bash
+python3 scripts/train_yolo.py --data configs/pacifico-fish-1class.yaml --device mps
+```
+
+yolov8n, 50 epochs, imgsz 640, batch 8. Validation mAP50 peaks at **0.583**
+(epoch 32); validation loss bottoms at epoch 33 and drifts up after, so the
+50-epoch budget overshoots.
+
+### Evaluation
+
+```bash
+python3 scripts/evaluate.py \
+  --dataset-dir dataset/pacifico-fish --split test \
+  --model "CFD baseline" rfdetr models/community-fish-detector-2026.02.02-rf-detr-nano-640.pth \
+  --model "Fine-tuned" yolo runs/detect/pacifico_fish_1class/weights/best.pt \
+  --out results/test_comparison.json
+```
+
+On the held-out test split (115 images, 369 boxes):
+
+| Model | mAP50 | mAP50-95 | P@0.25 | R@0.25 | F1 |
+|---|---:|---:|---:|---:|---:|
+| CFD baseline (RF-DETR nano, 640) | 0.172 | 0.054 | 0.193 | 0.287 | 0.231 |
+| Fine-tuned (yolov8n, 640) | **0.733** | **0.323** | 0.655 | 0.715 | 0.684 |
+
+**That 4.3× is not an improvement in detection.** Sweeping the IoU threshold
+shows the baseline finds *more* fish than the fine-tuned model when boxes only
+have to overlap loosely:
+
+| IoU | Baseline recall | Baseline TP | Fine-tuned recall | Fine-tuned TP |
+|---:|---:|---:|---:|---:|
+| 0.10 | **0.821** | **303** | 0.762 | 281 |
+| 0.30 | 0.648 | 239 | 0.759 | 280 |
+| 0.50 | 0.287 | 106 | 0.715 | 264 |
+
+The baseline draws systematically tighter boxes than this project's annotator,
+so correct detections are rejected on IoU: it loses 65% of its finds between
+IoU 0.10 and 0.50, against 6% for the fine-tuned model. What fine-tuning bought
+is agreement with the annotation convention and roughly half the false
+positives — not better detection.
+
+### Confusion matrix and per-species recall
+
+```bash
+python3 scripts/confusion_matrix.py \
+  --dataset-dir dataset/pacifico-fish --via-json annotations/reef1_via_clean.json \
+  --split test \
+  --model "CFD baseline" rfdetr models/community-fish-detector-2026.02.02-rf-detr-nano-640.pth \
+  --model "Fine-tuned" yolo runs/detect/pacifico_fish_1class/weights/best.pt \
+  --out results/test_confusion.json
+```
+
+At conf 0.25, IoU 0.50. Both models are single-class, so there is no class
+confusion to report and the matrix is detection against background; the
+background/background cell is undefined for detection.
+
+| | Baseline: actual fish | Baseline: actual bg | | Fine-tuned: actual fish | Fine-tuned: actual bg |
+|---|---:|---:|---|---:|---:|
+| **predicted fish** | 106 | 442 | | 264 | 139 |
+| **predicted background** | 263 | n/a | | 105 | n/a |
+
+Recall by the species the annotator assigned, even though neither model
+predicts species:
+
+| Species | Boxes | Baseline recall | Fine-tuned recall |
+|---|---:|---:|---:|
+| `not_defined` | 209 | 0.167 | 0.617 |
+| *Thalassoma lucasanum* | 86 | 0.314 | **0.942** |
+| *Azurina atrilobata* | 49 | 0.653 | 0.694 |
+| *Stegastes acapulcoensis* | 10 | 0.000 | **1.000** |
+| *Bodianus diplotaenia* | 7 | 0.714 | 0.857 |
+| *Scarus ghobban* | 5 | **1.000** | 0.400 |
+| *Diodon holocanthus* | 3 | 0.667 | 0.667 |
+
+Only the first three rows carry enough boxes to be meaningful; the rest are
+reported for completeness and should not be read as trends.
+
+`not_defined` is the hardest class for both models, which is consistent with
+those being the small, distant or blurred fish the annotator could not identify
+— and is an argument for keeping them as positives rather than discarding them.
+
 
 ## Contributors
 

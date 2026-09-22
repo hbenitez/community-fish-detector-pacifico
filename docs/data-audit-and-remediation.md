@@ -450,6 +450,57 @@ directly.
 
 Raw numbers: `results/test_comparison.json`.
 
+### 7.4 Confusion matrix and per-species recall
+
+From `scripts/confusion_matrix.py`, at conf 0.25 and IoU 0.50. Both models are
+single-class, so there is no class confusion to report: the matrix is detection
+against background, and the background/background cell is undefined, because a
+detector is not asked to enumerate the places a fish is not.
+
+| | Baseline: fish | Baseline: bg | | Fine-tuned: fish | Fine-tuned: bg |
+|---|---:|---:|---|---:|---:|
+| **predicted fish** | 106 | 442 | | 264 | 139 |
+| **predicted background** | 263 | n/a | | 105 | n/a |
+
+These counts reproduce 7.1 exactly from an independent implementation, which
+is a check on both.
+
+Every ground-truth box still carries the species the annotator assigned, so
+recall can be broken down per species even though neither model predicts one.
+This answers a question the detectors' own output cannot: which species get
+missed?
+
+| Species | Boxes | Baseline | Fine-tuned |
+|---|---:|---:|---:|
+| `not_defined` | 209 | 0.167 | 0.617 |
+| *Thalassoma lucasanum* | 86 | 0.314 | **0.942** |
+| *Azurina atrilobata* | 49 | 0.653 | 0.694 |
+| *Stegastes acapulcoensis* | 10 | 0.000 | **1.000** |
+| *Bodianus diplotaenia* | 7 | 0.714 | 0.857 |
+| *Scarus ghobban* | 5 | **1.000** | 0.400 |
+| *Diodon holocanthus* | 3 | 0.667 | 0.667 |
+
+Only `not_defined`, *Thalassoma* and *Azurina* carry enough boxes to support a
+claim. The four rows below them hold 3 to 10 boxes each, where a single
+detection moves recall by 10 to 33 points — *Scarus ghobban* going 1.000 to
+0.400 is five boxes against two, not a finding.
+
+Two things do hold:
+
+- **`not_defined` is the hardest class for both models** (0.167 and 0.617,
+  the lowest of the three meaningful rows). That is consistent with those
+  being the small, distant or blurred fish the annotator could not identify,
+  and it independently supports 4.1: they are genuine fish, harder than
+  average, and worth keeping as positives.
+- **The fine-tuned model's advantage is concentrated in the abundant classes**
+  it saw most during training — *Thalassoma* 0.314 to 0.942 on 86 boxes. On
+  *Azurina*, 49 boxes, the two models are near-identical (0.653 against
+  0.694), which is a further hint that the gain is convention-fitting rather
+  than better detection.
+
+Raw numbers: `results/test_confusion.json`.
+
+
 ---
 
 ## 8. Remaining work

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -24,55 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from detection_metrics import (  # noqa: E402
     CATEGORY_ID, coco_map, load_ground_truth, precision_recall_f1,
 )
-
-MAP_THRESHOLD = 0.001
-
-
-def predict_yolo(weights: Path, images: list[Path], imgsz: int) -> dict:
-    from ultralytics import YOLO
-
-    model = YOLO(str(weights))
-    out = {}
-    for path in images:
-        r = model.predict(str(path), conf=MAP_THRESHOLD, imgsz=imgsz,
-                          verbose=False)[0]
-        boxes = r.boxes
-        out[path.name] = [
-            (xyxy.tolist(), float(c))
-            for xyxy, c in zip(boxes.xyxy.cpu(), boxes.conf.cpu())
-        ]
-    return out
-
-
-def predict_rfdetr(weights: Path, images: list[Path]) -> dict:
-    """Load exactly as rf_detr_batch_inference.py does, via its own detector."""
-    from PIL import Image
-
-    sys.path.insert(0, str(Path(__file__).parent.parent))
-    from rf_detr_batch_inference import (  # type: ignore
-        MODEL_TYPE_MAP, detect_model_info_from_checkpoint,
-    )
-
-    info = detect_model_info_from_checkpoint(str(weights))
-    model_type = info.get("model_type")
-    resolution = info.get("resolution")
-    if model_type is None:
-        raise SystemExit(f"Could not determine model type from {weights}")
-    print(f"  RF-DETR type={model_type} resolution={resolution}")
-
-    cls = MODEL_TYPE_MAP[model_type]
-    model = (cls(resolution=resolution, pretrain_weights=str(weights))
-             if resolution else cls(pretrain_weights=str(weights)))
-
-    out = {}
-    for path in images:
-        with Image.open(path) as im:
-            det = model.predict(im.convert("RGB"), threshold=MAP_THRESHOLD)
-        out[path.name] = [
-            (xyxy.tolist(), float(c))
-            for xyxy, c in zip(det.xyxy, det.confidence)
-        ]
-    return out
+from detectors import MAP_THRESHOLD, predict  # noqa: E402
 
 
 def to_coco_detections(per_image: dict, ground_truth: dict) -> list[dict]:
@@ -107,6 +60,7 @@ def main() -> int:
     ap.add_argument("--iou-sweep", type=float, nargs="+",
                     default=[0.10, 0.25, 0.30, 0.50, 0.75],
                     help="IoU thresholds for the localisation sweep.")
+    ap.add_argument("--cache-dir", type=Path, default=Path("outputs/detections"))
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args()
 
@@ -124,12 +78,9 @@ def main() -> int:
     for label, kind, path in args.model:
         print(f"Running {label} ({kind})...")
         weights = Path(path)
-        if kind == "yolo":
-            per_image = predict_yolo(weights, images, args.imgsz)
-        elif kind == "rfdetr":
-            per_image = predict_rfdetr(weights, images)
-        else:
-            raise SystemExit(f"Unknown model type: {kind}")
+        slug = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
+        per_image = predict(kind, weights, images, args.imgsz,
+                            args.cache_dir / f"{slug}-{args.split}.json")
 
         detections = to_coco_detections(per_image, ground_truth)
         results[label] = {

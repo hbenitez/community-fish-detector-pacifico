@@ -1,0 +1,108 @@
+{
+  "split": "test",
+  "conf_threshold": 0.25,
+  "iou_threshold": 0.5,
+  "species_totals": {
+    "Azurina atrilobata": 49,
+    "not_defined": 209,
+    "Thalassoma lucasanum": 86,
+    "Scarus ghobban": 5,
+    "Stegastes acapulcoensis": 10,
+    "Bodianus diplotaenia": 7,
+    "Diodon holocanthus": 3
+  },
+  "results": {
+    "CFD baseline (RF-DETR nano)": {
+      "weights": "models/community-fish-detector-2026.02.02-rf-detr-nano-640.pth",
+      "type": "rfdetr",
+      "confusion": {
+        "tp": 106,
+        "fp": 442,
+        "fn": 263
+      },
+      "by_species": {
+        "not_defined": {
+          "boxes": 209,
+          "found": 35,
+          "recall": 0.1674641148325359
+        },
+        "Thalassoma lucasanum": {
+          "boxes": 86,
+          "found": 27,
+          "recall": 0.313953488372093
+        },
+        "Azurina atrilobata": {
+          "boxes": 49,
+          "found": 32,
+          "recall": 0.6530612244897959
+        },
+        "Stegastes acapulcoensis": {
+          "boxes": 10,
+          "found": 0,
+          "recall": 0.0
+        },
+        "Bodianus diplotaenia": {
+          "boxes": 7,
+          "found": 5,
+          "recall": 0.7142857142857143
+        },
+        "Scarus ghobban": {
+          "boxes": 5,
+          "found": 5,
+          "recall": 1.0
+        },
+        "Diodon holocanthus": {
+          "boxes": 3,
+          "found": 2,
+          "recall": 0.6666666666666666
+        }
+      }
+    },
+    "Fine-tuned (yolov8n 640)": {
+      "weights": "runs/detect/pacifico_fish_1class/weights/best.pt",
+      "type": "yolo",
+      "confusion": {
+        "tp": 264,
+        "fp": 139,
+        "fn": 105
+      },
+      "by_species": {
+        "not_defined": {
+          "boxes": 209,
+          "found": 129,
+          "recall": 0.6172248803827751
+        },
+        "Thalassoma lucasanum": {
+          "boxes": 86,
+          "found": 81,
+          "recall": 0.9418604651162791
+        },
+        "Azurina atrilobata": {
+          "boxes": 49,
+          "found": 34,
+          "recall": 0.6938775510204082
+        },
+        "Stegastes acapulcoensis": {
+          "boxes": 10,
+          "found": 10,
+          "recall": 1.0
+        },
+        "Bodianus diplotaenia": {
+          "boxes": 7,
+          "found": 6,
+          "recall": 0.8571428571428571
+        },
+        "Scarus ghobban": {
+          "boxes": 5,
+          "found": 2,
+          "recall": 0.4
+        },
+        "Diodon holocanthus": {
+          "boxes": 3,
+          "found": 2,
+          "recall": 0.6666666666666666
+        }
+      }
+    }
+  }
+}
