@@ -4,7 +4,7 @@
 **Scope:** the training, validation and evaluation material developed for the
 Utría / Eastern Pacific reef study, imported from Google Drive.
 **Status:** audit complete; leakage-free splits built and verified; retraining
-run. Baseline comparison on `test` still outstanding.
+run; baseline comparison scored on the held-out `test` split.
 
 ---
 
@@ -374,20 +374,98 @@ detector.
 
 ---
 
-## 7. Remaining work
+## 7. Baseline comparison on the test split
 
-1. **Port the evaluation** to score baseline and fine-tuned model identically
-   on `test`, via one shared metrics module.
-2. **Fix `evaluar_linea_base.py`** or delete it in favour of
-   `procesar_y_evaluar.py` (3.6).
-3. **Decide on `imgsz`** deliberately (3.7).
-4. **Decide on the AGPL dependency** before publishing weights (3.7).
-5. **Report species composition** as descriptive statistics from the 13-class
-   annotations, rather than as a detection task.
+Scored with `scripts/evaluate.py`, both models through the same ground truth
+and the same metrics code (`scripts/detection_metrics.py`), on the `test`
+split — 115 images, 369 boxes — read here for the first time. mAP comes from
+pycocotools.
+
+### 7.1 Headline
+
+| Model | mAP50 | mAP50-95 | P@0.25 | R@0.25 | F1 |
+|---|---:|---:|---:|---:|---:|
+| CFD baseline (RF-DETR nano, 640) | 0.172 | 0.054 | 0.193 | 0.287 | 0.231 |
+| Fine-tuned (yolov8n, 640) | **0.733** | **0.323** | 0.655 | 0.715 | 0.684 |
+
+Read alone, this says fine-tuning beat the baseline by 4.3× on mAP50. That
+reading is wrong, and the next section is the actual result.
+
+### 7.2 The gain is localisation agreement, not detection ability
+
+Recall and precision at conf 0.25, swept across the IoU threshold:
+
+| IoU | Baseline R | Baseline P | Baseline TP | Fine-tuned R | Fine-tuned P | Fine-tuned TP |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0.10 | **0.821** | 0.553 | **303** | 0.762 | 0.697 | 281 |
+| 0.25 | 0.713 | 0.480 | 263 | 0.759 | 0.695 | 280 |
+| 0.30 | 0.648 | 0.436 | 239 | 0.759 | 0.695 | 280 |
+| 0.50 | 0.287 | 0.193 | 106 | 0.715 | 0.655 | 264 |
+| 0.75 | 0.057 | 0.038 | 21 | 0.363 | 0.333 | 134 |
+
+**At a loose IoU threshold the baseline finds more fish than the fine-tuned
+model** — 303 true positives against 281, recall 0.821 against 0.762. It then
+loses 65% of those finds as the threshold tightens to 0.50 (303 → 106), while
+the fine-tuned model loses 6% (281 → 264).
+
+The baseline is not failing to detect fish. It is drawing boxes that do not
+match this project's annotation convention: consistently tighter than the
+human-drawn boxes. A representative case from `reef_01_00108.jpg` — prediction
+`[1004, 195, 1063, 268]` against ground truth `[978, 176, 1086, 277]`, an IoU
+of 0.40, correct fish, rejected as a miss at the 0.50 threshold.
+
+What fine-tuning actually bought, therefore, is two things, and detection
+sensitivity is not among them:
+
+1. **Agreement with the annotator's box convention** — the flat recall curve
+   from IoU 0.10 to 0.50 is the whole story.
+2. **Fewer false positives** — 122 against 245 at IoU 0.10, roughly half.
+
+### 7.3 What this means for the study
+
+The defensible claim is narrower than "fine-tuning improves fish detection on
+Eastern Pacific reefs":
+
+> Fine-tuning aligned the detector with this project's annotation convention
+> and halved its false-positive rate. It did not improve its ability to find
+> fish; the general-purpose baseline located slightly more of them.
+
+Three consequences:
+
+- **The improvement may not transfer.** Part of what the model learned is one
+  annotator's box-drawing habits, not a property of Eastern Pacific reefs. A
+  second annotator, or another dataset, would likely see a smaller gain.
+- **mAP50 alone overstates the result** by folding localisation agreement into
+  a number that reads as detection quality. The sweep belongs in the write-up
+  beside it.
+- **The baseline deserves a fairer hearing.** Reported at IoU 0.25 it scores
+  F1 0.574 rather than 0.231. Neither figure is wrong; the 0.50 convention is
+  standard and should stay the headline, but quoting it without the sweep
+  misrepresents where the baseline actually fails.
+
+A worthwhile follow-up: re-score both models against ground truth from a
+second annotator on a subset. If the baseline's IoU-0.50 recall rises while
+the fine-tuned model's falls, the convention-fitting hypothesis is confirmed
+directly.
+
+Raw numbers: `results/test_comparison.json`.
 
 ---
 
-## 8. Note on the earlier results
+## 8. Remaining work
+
+1. **Fix `evaluar_linea_base.py`** or delete it in favour of
+   `procesar_y_evaluar.py` (3.6).
+2. **Decide on `imgsz`** deliberately (3.7).
+3. **Decide on the AGPL dependency** before publishing weights (3.7).
+4. **Report species composition** as descriptive statistics from the 13-class
+   annotations, rather than as a detection task.
+5. **Test the convention hypothesis** (7.3) with a second annotator on a
+   subset, which would settle how much of the gain transfers.
+
+---
+
+## 9. Note on the earlier results
 
 `runs/detect/cfd_pacifico/` should be retained as a record of the first
 iteration, but none of its metrics can be cited. If the earlier figures have
