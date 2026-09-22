@@ -3,8 +3,8 @@
 **Date:** 2026-09-20
 **Scope:** the training, validation and evaluation material developed for the
 Utría / Eastern Pacific reef study, imported from Google Drive.
-**Status:** audit complete; leakage-free splits built and verified. Retraining
-not yet run.
+**Status:** audit complete; leakage-free splits built and verified; retraining
+run. Baseline comparison on `test` still outstanding.
 
 ---
 
@@ -301,22 +301,93 @@ another.
 
 ---
 
-## 6. Remaining work
+## 6. Retraining results
 
-1. **Retrain** on `configs/pacifico-fish-1class.yaml` and report `val` numbers.
-   The honest score will be materially below 0.9373; that is the point.
-2. **Port the evaluation** to score baseline and fine-tuned model identically
+Run with `scripts/train_yolo.py` on `configs/pacifico-fish-1class.yaml`:
+yolov8n, 50 epochs, imgsz 640, batch 8, seed 0, MPS, 0.536 h.
+
+`imgsz` is 640 rather than the original 1024. The 1024 was inherited from the
+yolov12x model card (3.7) and was never justified for a nano backbone; 640 is
+also the resolution the RF-DETR baseline was trained at, which makes the
+comparison in 4.4 cleaner. At 1024 with batch 16 the run also exhausts unified
+memory on a 16 GB machine and collapses into swap.
+
+### 6.1 Headline numbers
+
+Validation split, 116 images, 232 boxes, `best.pt` (epoch 32):
+
+| Metric | Value |
+|---|---:|
+| mAP50 | **0.583** |
+| mAP50-95 | 0.268 |
+| Precision | 0.564 |
+| Recall | 0.578 |
+
+Final epoch 50 was worse than the best: mAP50 0.543.
+
+### 6.2 Against the previously reported figure
+
+| | Previous | This run |
+|---|---:|---:|
+| mAP50 | 0.9373 | **0.583** |
+| Measured on | the training images | a held-out split |
+
+The gap is not a regression. It is the size of the error the leak was hiding.
+
+The two runs differ in more than the split — 13 classes at 1024 versus one
+class at 640, and background frames now included — so this is not a controlled
+comparison. But the confounds work *against* the leaked figure: single-class
+detection is a strictly easier task than 13-class, so an honest 13-class score
+would be lower still, not higher.
+
+### 6.3 Convergence
+
+Training loss falls monotonically, 7.94 to 3.88. Validation loss bottoms at
+**epoch 33** (5.06) and drifts upward thereafter while training loss keeps
+falling — the signature of mild overfitting.
+
+| Epoch | Train loss | Val loss | mAP50 |
+|---:|---:|---:|---:|
+| 1 | 7.943 | 7.402 | 0.099 |
+| 10 | 5.041 | 6.083 | 0.469 |
+| 20 | 4.621 | 5.367 | 0.557 |
+| 32 | 4.231 | 5.319 | **0.591** |
+| 40 | 4.054 | 5.476 | 0.573 |
+| 50 | 3.875 | 5.389 | 0.543 |
+
+mAP50 peaks at epoch 32 and declines over the final 18 epochs. The 50-epoch
+budget is therefore too long for this dataset: the run should stop around epoch
+35. Per-epoch mAP is noisy — a 232-box validation set moves several points when
+a handful of detections change — so the peak should not be over-read either.
+
+`best.pt` correctly captures epoch 32 rather than the final weights.
+
+### 6.4 Reading these numbers
+
+mAP50 0.583 with mAP50-95 0.268 says the model finds roughly the right fish but
+localises them loosely: performance falls away sharply as the IoU threshold
+rises. Recall 0.578 means it misses about four fish in ten.
+
+This is a plausible result for 495 training images and 981 boxes of small,
+low-contrast underwater targets. It is a starting point, not a finished
+detector.
+
+---
+
+## 7. Remaining work
+
+1. **Port the evaluation** to score baseline and fine-tuned model identically
    on `test`, via one shared metrics module.
-3. **Fix `evaluar_linea_base.py`** or delete it in favour of
+2. **Fix `evaluar_linea_base.py`** or delete it in favour of
    `procesar_y_evaluar.py` (3.6).
-4. **Decide on `imgsz`** deliberately (3.7).
-5. **Decide on the AGPL dependency** before publishing weights (3.7).
-6. **Report species composition** as descriptive statistics from the 13-class
+3. **Decide on `imgsz`** deliberately (3.7).
+4. **Decide on the AGPL dependency** before publishing weights (3.7).
+5. **Report species composition** as descriptive statistics from the 13-class
    annotations, rather than as a detection task.
 
 ---
 
-## 7. Note on the earlier results
+## 8. Note on the earlier results
 
 `runs/detect/cfd_pacifico/` should be retained as a record of the first
 iteration, but none of its metrics can be cited. If the earlier figures have
