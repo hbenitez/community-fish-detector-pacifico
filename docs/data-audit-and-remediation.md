@@ -5,7 +5,8 @@
 Utría / Eastern Pacific reef study, imported from Google Drive.
 **Status:** audit complete; leakage-free splits built and verified; single-class
 and five-class models trained; both scored against the CFD baseline on the
-held-out `test` split.
+held-out `test` split. Section 10 sets out what building a robust detector
+would require.
 
 ---
 
@@ -548,6 +549,23 @@ boxes become background, which teaches the model that fish are background.
 | `unidentified` | 651 | 209 | 0.432 | 0.170 | 0.525 | 0.460 |
 | *Azurina atrilobata* | 57 | 48 | 0.355 | 0.186 | 0.359 | 0.467 |
 
+Validation, for comparison (`best.pt`, epoch 35):
+
+| Class | val boxes | mAP50 | mAP50-95 |
+|---|---:|---:|---:|
+| **all** | 232 | 0.507 | 0.234 |
+| *Thalassoma lucasanum* | 59 | 0.720 | 0.324 |
+| *Stegastes acapulcoensis* | 10 | 0.698 | 0.359 |
+| `other_fish` | 32 | 0.545 | 0.313 |
+| `unidentified` | 126 | 0.292 | 0.117 |
+| *Azurina atrilobata* | 5 | 0.278 | 0.057 |
+
+Validation mAP50 peaks at 0.512 (epoch 35) and the run does not improve after;
+as with the single-class model, the 50-epoch budget overshoots. The class
+ordering is stable between val and test except for *Stegastes*, which rests on
+10 boxes in each and moves 0.698 to 0.852 — an illustration of why those
+figures carry wide intervals.
+
 ### 8.3 Training data volume is not the binding constraint
 
 The table above is ordered by score, and it is almost inverted against
@@ -634,7 +652,218 @@ duplicate in the dataset.
 
 ---
 
-## 10. Note on the earlier results
+## 10. Building a robust dataset and detector
+
+Everything above describes what can be salvaged from 39.5 minutes of footage
+annotated by one person. This section is what it would take to build something
+that holds up outside this study.
+
+### 10.1 The binding constraint is footage, not annotation effort
+
+8.3 established that independent observations, not boxes, predict per-class
+performance. Measured over the full 39.5 minutes, species accumulate episodes
+at very different rates:
+
+| Species | Boxes | Episodes | Episodes/min | Minutes for 30 episodes |
+|---|---:|---:|---:|---:|
+| *Thalassoma lucasanum* | 399 | 45 | 1.14 | 26 ✓ |
+| *Stegastes acapulcoensis* | 67 | 36 | 0.91 | 33 ✓ |
+| `not_defined` | 1,070 | 34 | 0.86 | 35 ✓ |
+| *Azurina atrilobata* | 125 | 14 | 0.35 | 86 |
+| *Bodianus diplotaenia* | 14 | 8 | 0.20 | 150 |
+| *Scarus ghobban* | 17 | 7 | 0.18 | 167 |
+| *Cephalopholis panamensis* | 24 | 5 | 0.13 | 231 |
+| *Haemulon maculicauda* | 17 | 3 | 0.08 | 375 |
+| *Diodon holocanthus* | 33 | 2 | 0.05 | 600 |
+
+Taking ~20 training episodes as the working threshold — *Stegastes* reached
+0.852 on 19, *Azurina* managed 0.355 on 8 — and allowing for val and test,
+roughly **30 episodes per class** is the target.
+
+**Supporting the top seven species therefore needs about six hours of
+footage**, ten times what exists. *Diodon* would need ten hours. Annotating
+the existing 39.5 minutes more carefully cannot substitute: the fish are not
+in the frames.
+
+These rates are specific to these two transects. Other sites will have
+different assemblages, which is itself a reason to spread collection.
+
+### 10.2 Collect breadth, not density
+
+The current sampling — one frame per three seconds through two continuous
+dives — maximises frames per minute of footage and minimises independent
+observations. It is the wrong trade. 790 frames yielded only 45 episodes of
+even the commonest species.
+
+Sample **sparsely across many dives** rather than densely within few. One
+frame every 10–15 seconds over six hours gives far more independent
+observations than one every three seconds over forty minutes, for fewer frames
+to annotate.
+
+Vary deliberately, because each axis is a way the deployed model will be asked
+to generalise:
+
+- **Site** — at least three or four, not one reef
+- **Depth**, which drives colour attenuation
+- **Turbidity and sea state**, the main appearance shift between dives
+- **Time of day**, for light angle and fish activity
+- **Camera and housing**, if more than one rig will ever be used
+- **Season**, if the survey is to run across the year
+
+Target at least **6–10 dives across 3+ sites**. Fewer than three sites makes
+the split design in 10.4 impossible.
+
+### 10.3 Annotation protocol
+
+7.2 showed that a detector can find fish correctly and still score 0.172
+because it draws boxes differently from the annotator. Box convention is not a
+detail; it is most of what fine-tuning learned.
+
+1. **Write the box convention down before annotating.** Are fins included?
+   Trailing tails? How are partly occluded fish handled, and fish cut by the
+   frame edge? Is there a minimum size below which a fish is not annotated?
+   Ambiguity here becomes irreducible model error.
+2. **Use at least two annotators**, with a shared overlap subset of 10–15% of
+   frames, and compute inter-annotator agreement on it — IoU distribution on
+   matched boxes, plus disagreement counts on presence. That number is the
+   ceiling on achievable model performance, and without it there is no way to
+   tell a model error from a labelling error.
+3. **Refine the `unidentified` policy.** `not_defined` currently merges two
+   different things: *a fish is present but cannot be made out at all*, and
+   *the species is uncertain between a few candidates*. The first is
+   irreducible; the second is recoverable with a better-trained annotator or a
+   higher-resolution crop. Record them separately.
+4. **Automate quality checks.** The duplicate in `reef_01_00117` (8.6) was
+   found only because two tools disagreed on a box count. Check for duplicate
+   boxes, zero-area boxes, boxes outside image bounds, and unusually large or
+   small boxes as a routine step.
+5. **Be careful with model-assisted pre-annotation.** Pre-labelling frames
+   with an existing detector is tempting at six hours of footage, and it will
+   speed the work considerably. But 7.2 is a warning: a model's box convention
+   propagates into anything annotated from its output, and annotators are
+   reluctant to adjust a box that looks approximately right. If used,
+   pre-annotate with the model whose convention you want, review every box,
+   and keep a model-free subset for measuring the bias.
+
+### 10.4 Split design for genuine generalisation
+
+The block-and-guard-band scheme in 4.2 is the right answer for two videos, but
+it only tests generalisation to *unseen moments in dives the model has already
+seen*. With more sites, three progressively harder splits become possible, and
+all three are worth reporting:
+
+| Split level | Held out | Answers |
+|---|---|---|
+| Within-dive | Temporal blocks (current) | Does it work on new moments? |
+| Across-dive | Whole dives from seen sites | Does it survive a new dive, new conditions? |
+| **Across-site** | **Whole sites** | **Will it work where it has never been?** |
+
+The across-site number is the one that matters for deployment, and it will be
+the lowest of the three. Report all three: the gap between them *is* the
+generalisation measurement.
+
+Stratify where the data allows, so each split holds a usable count of every
+named species — with across-site splits this will often be impossible for rare
+species, which is itself a finding to report rather than engineer around.
+
+### 10.5 Architecture: two stages, not one
+
+8.4 measured the cost of folding species into the detector: mAP50 0.733 to
+0.663, about 10% of detection performance, because capacity is split across
+classes dominated by `unidentified`.
+
+A two-stage design avoids that trade:
+
+1. **Detector** — single `fish` class, which is exactly the configuration that
+   scored best, and the same task as the CFD baseline, so the comparison stays
+   clean.
+2. **Classifier** — a separate model over detected crops, predicting species.
+
+The advantages are concrete rather than architectural taste:
+
+- Detection performance is not taxed by the species objective.
+- The classifier can be class-balanced independently — oversampling rare
+  species, or weighting the loss — without distorting detection.
+- `unidentified` becomes a classifier output, not a detection class competing
+  for capacity.
+- New species can be added by retraining only the classifier.
+- The two stages can be evaluated, and can fail, separately: "found 85% of
+  fish, named 60% of them correctly" is far more actionable than a single
+  blended mAP.
+
+The cost is a second model to maintain, and error compounding — a missed
+detection cannot be recovered by the classifier. Worth it here, given that the
+detector is the part with a usable baseline to beat.
+
+### 10.6 Training protocol
+
+- **Early stopping on validation.** Both runs peaked around epoch 32–35 of 50
+  and degraded after (6.3, 8.2). Use `patience` rather than a fixed budget.
+- **Revisit `imgsz` deliberately.** 640 was chosen to match the baseline and to
+  fit 16 GB. With small, distant targets — which `unidentified` largely is —
+  higher resolution is the most plausible single lever, and should be tested
+  properly rather than inherited.
+- **Augment for the actual domain shift**: colour and white-balance jitter for
+  depth and turbidity, motion blur, compression artefacts. Standard
+  photometric augmentation is tuned for terrestrial imagery.
+- **Balance the classifier stage** by sampling or loss weighting; do not
+  balance the detector, where background frames matter.
+- **Fix seeds, record configs, commit them.** Both runs here used `seed=0` and
+  `deterministic=True`, and their configs are in `configs/`.
+
+### 10.7 Evaluation protocol
+
+- **Read `test` once.** Every intermediate decision uses `val`.
+- **Always report the IoU sweep**, never mAP50 alone. 7.2 is the case study:
+  the headline number said 4.3× improvement, the sweep said the baseline found
+  more fish.
+- **Report per-class results with their box counts**, so thin classes are
+  visibly thin. *Stegastes* at 0.852 on 10 boxes should never appear as a bare
+  number.
+- **Run the second-annotator check** (7.3). Re-score both models against an
+  independent annotator on a subset. If the baseline's IoU-0.50 recall rises
+  while the fine-tuned model's falls, the gain was convention-fitting. This is
+  the single most informative experiment still outstanding, and it needs only
+  a subset.
+- **Keep comparing against the CFD baseline.** It is a strong, free reference
+  point, and 7.2 shows it is better than its headline number suggests.
+
+### 10.8 A staged plan
+
+| Phase | Work | Exit criterion |
+|---|---|---|
+| 0 | Remove the duplicate box; write the annotation convention; add the QA checks | Convention documented; checks run clean |
+| 1 | Second-annotator subset on existing frames; compute IAA | IAA known; 7.3 convention question answered |
+| 2 | Collect 4–6 more hours across 3+ sites | ≥30 episodes for 6+ species |
+| 3 | Annotate under the protocol, two annotators | Duplicate-free; IAA within target |
+| 4 | Train two-stage detector + classifier | Detection ≥ current 0.733 within-dive |
+| 5 | Evaluate at all three split levels | Across-site number reported with per-class counts |
+
+Phases 0 and 1 need no new footage and would sharpen the interpretation of
+everything already measured. They are the cheapest work with the highest
+information return, and should come first.
+
+### 10.9 How to know it worked
+
+Concrete targets, stated in advance so they cannot be adjusted afterwards:
+
+- **Across-site detection mAP50 ≥ 0.60.** The current within-dive figure is
+  0.733; a drop of more than about 0.15 across sites indicates the model has
+  learned a site rather than a subject.
+- **Every named species has ≥30 test boxes**, so per-class numbers carry a
+  usable interval.
+- **Species classification accuracy ≥ 0.70** on detected crops, for the named
+  classes.
+- **The baseline gap survives a second annotator.** If it does not, the honest
+  conclusion is that the fine-tuning fitted a convention, and the study should
+  report that.
+- **`unidentified` falls below 40% of boxes.** It is 60% now. Higher
+  resolution, better footage and a clearer protocol should each reduce it; if
+  it does not fall, that is evidence the imagery itself is the limit.
+
+---
+
+## 11. Note on the earlier results
 
 `runs/detect/cfd_pacifico/` should be retained as a record of the first
 iteration, but none of its metrics can be cited. If the earlier figures have
